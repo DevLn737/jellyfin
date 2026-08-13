@@ -340,6 +340,7 @@ public class SessionController : BaseJellyfinApiController
     /// <param name="supportedCommands">A list of supported remote control commands, comma delimited.</param>
     /// <param name="supportsMediaControl">Determines whether media can be played remotely..</param>
     /// <param name="supportsPersistentIdentifier">Determines whether the device supports a unique identifier.</param>
+    /// <param name="supportsSyncPlayPlaybackRate">Determines whether the client supports synchronized SyncPlay playback rates.</param>
     /// <response code="204">Capabilities posted.</response>
     /// <returns>A <see cref="NoContentResult"/>.</returns>
     [HttpPost("Sessions/Capabilities")]
@@ -350,7 +351,8 @@ public class SessionController : BaseJellyfinApiController
         [FromQuery, ModelBinder(typeof(CommaDelimitedCollectionModelBinder))] MediaType[] playableMediaTypes,
         [FromQuery, ModelBinder(typeof(CommaDelimitedCollectionModelBinder))] GeneralCommandType[] supportedCommands,
         [FromQuery] bool supportsMediaControl = false,
-        [FromQuery] bool supportsPersistentIdentifier = true)
+        [FromQuery] bool supportsPersistentIdentifier = true,
+        [FromQuery] bool supportsSyncPlayPlaybackRate = false)
     {
         if (string.IsNullOrWhiteSpace(id))
         {
@@ -362,7 +364,8 @@ public class SessionController : BaseJellyfinApiController
             PlayableMediaTypes = playableMediaTypes,
             SupportedCommands = supportedCommands,
             SupportsMediaControl = supportsMediaControl,
-            SupportsPersistentIdentifier = supportsPersistentIdentifier
+            SupportsPersistentIdentifier = supportsPersistentIdentifier,
+            SupportsSyncPlayPlaybackRate = supportsSyncPlayPlaybackRate
         });
         return NoContent();
     }

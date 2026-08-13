@@ -70,13 +70,22 @@ public class SyncPlayController : BaseJellyfinApiController
     /// <returns>A <see cref="NoContentResult"/> indicating success.</returns>
     [HttpPost("Join")]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
     [Authorize(Policy = Policies.SyncPlayJoinGroup)]
     public async Task<ActionResult> SyncPlayJoinGroup(
         [FromBody, Required] JoinGroupRequestDto requestData)
     {
         var currentSession = await RequestHelpers.GetSession(_sessionManager, _userManager, HttpContext).ConfigureAwait(false);
         var syncPlayRequest = new JoinGroupRequest(requestData.GroupId);
-        _syncPlayManager.JoinGroup(currentSession, syncPlayRequest, CancellationToken.None);
+        try
+        {
+            _syncPlayManager.JoinGroup(currentSession, syncPlayRequest, CancellationToken.None);
+        }
+        catch (SyncPlayPlaybackRateNotSupportedException ex)
+        {
+            return PlaybackRateConflict(ex);
+        }
+
         return NoContent();
     }
 
@@ -288,6 +297,46 @@ public class SyncPlayController : BaseJellyfinApiController
     }
 
     /// <summary>
+    /// Sets the server-owned base playback rate for the current SyncPlay group.
+    /// </summary>
+    /// <param name="requestData">The requested playback rate.</param>
+    /// <response code="204">Playback-rate update sent to all group members.</response>
+    /// <response code="400">The playback rate is not finite or outside the supported range.</response>
+    /// <response code="409">At least one participant does not support synchronized playback rates.</response>
+    /// <returns>An empty response on success or problem details on failure.</returns>
+    [HttpPost("SetPlaybackRate")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
+    [Authorize(Policy = Policies.SyncPlayIsInGroup)]
+    public async Task<ActionResult> SyncPlaySetPlaybackRate(
+        [FromBody, Required] SetPlaybackRateRequestDto requestData)
+    {
+        if (float.IsNaN(requestData.PlaybackRate)
+            || float.IsInfinity(requestData.PlaybackRate)
+            || requestData.PlaybackRate < 0.25F
+            || requestData.PlaybackRate > 5.0F)
+        {
+            ModelState.AddModelError(nameof(requestData.PlaybackRate), "PlaybackRate must be finite and between 0.25 and 5.0.");
+            return ValidationProblem(ModelState);
+        }
+
+        var currentSession = await RequestHelpers.GetSession(_sessionManager, _userManager, HttpContext).ConfigureAwait(false);
+        var syncPlayRequest = new SetPlaybackRateGroupRequest(requestData.PlaybackRate);
+
+        try
+        {
+            _syncPlayManager.HandleRequest(currentSession, syncPlayRequest, CancellationToken.None);
+        }
+        catch (SyncPlayPlaybackRateNotSupportedException ex)
+        {
+            return PlaybackRateConflict(ex);
+        }
+
+        return NoContent();
+    }
+
+    /// <summary>
     /// Notify SyncPlay group that member is buffering.
     /// </summary>
     /// <param name="requestData">The player status.</param>
@@ -436,5 +485,18 @@ public class SyncPlayController : BaseJellyfinApiController
         var syncPlayRequest = new PingGroupRequest(requestData.Ping);
         _syncPlayManager.HandleRequest(currentSession, syncPlayRequest, CancellationToken.None);
         return NoContent();
+    }
+
+    private ConflictObjectResult PlaybackRateConflict(SyncPlayPlaybackRateNotSupportedException exception)
+    {
+        var problem = new ProblemDetails
+        {
+            Status = StatusCodes.Status409Conflict,
+            Title = "SyncPlay playback rate is not supported by every participant",
+            Detail = exception.Message
+        };
+        problem.Extensions["code"] = "SyncPlayPlaybackRateNotSupported";
+        problem.Extensions["unsupportedParticipants"] = exception.UnsupportedParticipants;
+        return Conflict(problem);
     }
 }

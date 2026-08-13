@@ -14,7 +14,7 @@ namespace MediaBrowser.Controller.SyncPlay.GroupStates
     /// <remarks>
     /// Class is not thread-safe, external locking is required when accessing methods.
     /// </remarks>
-    public abstract class AbstractGroupState : IGroupState
+    public abstract class AbstractGroupState : IGroupState, IPlaybackRateGroupState
     {
         /// <summary>
         /// The logger.
@@ -129,6 +129,12 @@ namespace MediaBrowser.Controller.SyncPlay.GroupStates
             var playQueueUpdate = context.GetPlayQueueUpdate(reason);
             var update = new SyncPlayPlayQueueUpdate(context.GroupId, playQueueUpdate);
             context.SendGroupUpdate(session, SyncPlayBroadcastType.AllGroup, update, cancellationToken);
+        }
+
+        /// <inheritdoc />
+        public virtual void HandleRequest(SetPlaybackRateGroupRequest request, IGroupStateContext context, GroupStateType prevState, SessionInfo session, CancellationToken cancellationToken)
+        {
+            UnhandledRequest(request);
         }
 
         /// <inheritdoc />

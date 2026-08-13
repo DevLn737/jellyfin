@@ -114,6 +114,14 @@ namespace MediaBrowser.Controller.SyncPlay.GroupStates
         }
 
         /// <inheritdoc />
+        public override void HandleRequest(SetPlaybackRateGroupRequest request, IGroupStateContext context, GroupStateType prevState, SessionInfo session, CancellationToken cancellationToken)
+        {
+            var waitingState = new WaitingGroupState(LoggerFactory);
+            context.SetState(waitingState);
+            waitingState.HandleRequest(request, context, Type, session, cancellationToken);
+        }
+
+        /// <inheritdoc />
         public override void HandleRequest(BufferGroupRequest request, IGroupStateContext context, GroupStateType prevState, SessionInfo session, CancellationToken cancellationToken)
         {
             if (IgnoreBuffering)
