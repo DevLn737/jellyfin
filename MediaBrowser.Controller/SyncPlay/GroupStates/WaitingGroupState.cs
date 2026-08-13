@@ -355,6 +355,7 @@ namespace MediaBrowser.Controller.SyncPlay.GroupStates
             var rateContext = (IPlaybackRateGroupStateContext)context;
             rateContext.BasePlaybackRate = rateContext.SanitizePlaybackRate(request.PlaybackRate);
             context.LastActivity = DateTime.UtcNow;
+            PositionJumped = true;
 
             var command = context.NewSyncPlayCommand(SendCommandType.Seek);
             context.SendCommand(session, SyncPlayBroadcastType.AllGroup, command, cancellationToken);

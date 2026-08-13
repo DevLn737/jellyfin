@@ -143,6 +143,27 @@ public class GroupPlaybackRateTests
     }
 
     [Fact]
+    public void SetPlaybackRate_WithOutOfRangePlayingReady_SeeksInsteadOfSchedulingDistantUnpause()
+    {
+        var (group, session) = CreateGroup(supportsPlaybackRate: true);
+        group.PositionTicks = TimeSpan.FromSeconds(228).Ticks;
+        group.LastActivity = DateTime.UtcNow;
+        group.SetState(new PlayingGroupState(_loggerFactory.Object));
+
+        group.HandleRequest(session, new SetPlaybackRateGroupRequest(1.5F), CancellationToken.None);
+        _commands.Clear();
+        group.HandleRequest(
+            session,
+            new ReadyGroupRequest(DateTime.UtcNow, TimeSpan.FromMilliseconds(228).Ticks, true, Guid.Empty),
+            CancellationToken.None);
+
+        Assert.Equal(GroupStateType.Waiting, group.GetInfo().State);
+        var command = Assert.Single(_commands, item => item.Command == SendCommandType.Seek);
+        Assert.Equal(group.PositionTicks, command.PositionTicks);
+        Assert.DoesNotContain(_commands, item => item.Command == SendCommandType.Unpause);
+    }
+
+    [Fact]
     public void AcceleratedGroup_RejectsSessionWithoutCapability()
     {
         var (group, session) = CreateGroup(supportsPlaybackRate: true);
