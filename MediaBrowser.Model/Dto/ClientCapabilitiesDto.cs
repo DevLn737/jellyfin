@@ -30,6 +30,11 @@ public class ClientCapabilitiesDto
     public bool SupportsMediaControl { get; set; }
 
     /// <summary>
+    /// Gets or sets a value indicating whether session supports synchronized SyncPlay playback rates.
+    /// </summary>
+    public bool SupportsSyncPlayPlaybackRate { get; set; }
+
+    /// <summary>
     /// Gets or sets a value indicating whether session supports a persistent identifier.
     /// </summary>
     public bool SupportsPersistentIdentifier { get; set; }
@@ -60,6 +65,7 @@ public class ClientCapabilitiesDto
             PlayableMediaTypes = PlayableMediaTypes,
             SupportedCommands = SupportedCommands,
             SupportsMediaControl = SupportsMediaControl,
+            SupportsSyncPlayPlaybackRate = SupportsSyncPlayPlaybackRate,
             SupportsPersistentIdentifier = SupportsPersistentIdentifier,
             DeviceProfile = DeviceProfile,
             AppStoreUrl = AppStoreUrl,

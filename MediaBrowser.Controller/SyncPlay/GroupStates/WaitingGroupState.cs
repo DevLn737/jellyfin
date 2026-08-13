@@ -78,7 +78,7 @@ namespace MediaBrowser.Controller.SyncPlay.GroupStates
                 // In other words, LastActivity is in the future,
                 // when playback unpause is supposed to happen.
                 // Seek only if playback actually started.
-                context.PositionTicks += Math.Max(elapsedTime.Ticks, 0);
+                context.PositionTicks += Math.Max(context.ToMediaTicks(elapsedTime), 0);
             }
 
             // Prepare new session.
@@ -331,6 +331,38 @@ namespace MediaBrowser.Controller.SyncPlay.GroupStates
         }
 
         /// <inheritdoc />
+        public override void HandleRequest(SetPlaybackRateGroupRequest request, IGroupStateContext context, GroupStateType prevState, SessionInfo session, CancellationToken cancellationToken)
+        {
+            if (!InitialStateSet)
+            {
+                InitialState = prevState;
+                InitialStateSet = true;
+            }
+
+            if (prevState.Equals(GroupStateType.Playing))
+            {
+                ResumePlaying = true;
+                var currentTime = DateTime.UtcNow;
+                var elapsedTime = currentTime - context.LastActivity;
+                context.PositionTicks += Math.Max(context.ToMediaTicks(elapsedTime), 0);
+                context.LastActivity = currentTime;
+            }
+            else if (prevState.Equals(GroupStateType.Paused))
+            {
+                ResumePlaying = false;
+            }
+
+            var rateContext = (IPlaybackRateGroupStateContext)context;
+            rateContext.BasePlaybackRate = rateContext.SanitizePlaybackRate(request.PlaybackRate);
+            context.LastActivity = DateTime.UtcNow;
+
+            var command = context.NewSyncPlayCommand(SendCommandType.Seek);
+            context.SendCommand(session, SyncPlayBroadcastType.AllGroup, command, cancellationToken);
+            context.SetAllBuffering(true);
+            SendGroupStateUpdate(context, request, session, cancellationToken);
+        }
+
+        /// <inheritdoc />
         public override void HandleRequest(BufferGroupRequest request, IGroupStateContext context, GroupStateType prevState, SessionInfo session, CancellationToken cancellationToken)
         {
             // Save state if first event.
@@ -370,7 +402,7 @@ namespace MediaBrowser.Controller.SyncPlay.GroupStates
                 // In other words, LastActivity is in the future,
                 // when playback unpause is supposed to happen.
                 // Seek only if playback actually started.
-                context.PositionTicks += Math.Max(elapsedTime.Ticks, 0);
+                context.PositionTicks += Math.Max(context.ToMediaTicks(elapsedTime), 0);
 
                 // Send pause command to all non-buffering sessions.
                 var command = context.NewSyncPlayCommand(SendCommandType.Pause);
@@ -449,8 +481,9 @@ namespace MediaBrowser.Controller.SyncPlay.GroupStates
             }
 
             var requestTicks = context.SanitizePositionTicks(request.PositionTicks);
-            var clientPosition = TimeSpan.FromTicks(requestTicks) + elapsedTime;
+            var clientPosition = TimeSpan.FromTicks(requestTicks + context.ToMediaTicks(elapsedTime));
             var delayTicks = context.PositionTicks - clientPosition.Ticks;
+            var wallClockDelayTicks = context.ToWallClockTicks(delayTicks);
             var maxPlaybackOffsetTicks = TimeSpan.FromMilliseconds(context.MaxPlaybackOffset).Ticks;
 
             _logger.LogDebug("Session {SessionId} is at {PositionTicks} (delay of {Delay} seconds) in group {GroupId}.", session.Id, clientPosition, TimeSpan.FromTicks(delayTicks).TotalSeconds, context.GroupId.ToString());
@@ -488,19 +521,19 @@ namespace MediaBrowser.Controller.SyncPlay.GroupStates
                 {
                     // Others are still buffering, tell this client to pause when ready.
                     var command = context.NewSyncPlayCommand(SendCommandType.Pause);
-                    command.When = currentTime.AddTicks(delayTicks);
+                    command.When = currentTime.AddTicks(wallClockDelayTicks);
                     context.SendCommand(session, SyncPlayBroadcastType.CurrentSession, command, cancellationToken);
 
-                    _logger.LogInformation("Session {SessionId} will pause when ready in {Delay} seconds. Group {GroupId} is waiting for all ready events.", session.Id, TimeSpan.FromTicks(delayTicks).TotalSeconds, context.GroupId.ToString());
+                    _logger.LogInformation("Session {SessionId} will pause when ready in {Delay} seconds. Group {GroupId} is waiting for all ready events.", session.Id, TimeSpan.FromTicks(wallClockDelayTicks).TotalSeconds, context.GroupId.ToString());
                 }
                 else
                 {
                     // If all ready, then start playback.
                     // Let other clients resume as soon as the buffering client catches up.
-                    if (delayTicks > context.GetHighestPing() * 2 * TimeSpan.TicksPerMillisecond)
+                    if (wallClockDelayTicks > context.GetHighestPing() * 2 * TimeSpan.TicksPerMillisecond)
                     {
                         // Client that was buffering is recovering, notifying others to resume.
-                        context.LastActivity = currentTime.AddTicks(delayTicks);
+                        context.LastActivity = currentTime.AddTicks(wallClockDelayTicks);
                         var command = context.NewSyncPlayCommand(SendCommandType.Unpause);
                         var filter = SyncPlayBroadcastType.AllExceptCurrentSession;
                         if (!request.IsPlaying)
@@ -510,20 +543,20 @@ namespace MediaBrowser.Controller.SyncPlay.GroupStates
 
                         context.SendCommand(session, filter, command, cancellationToken);
 
-                        _logger.LogInformation("Session {SessionId} is recovering, group {GroupId} will resume in {Delay} seconds.", session.Id, context.GroupId.ToString(), TimeSpan.FromTicks(delayTicks).TotalSeconds);
+                        _logger.LogInformation("Session {SessionId} is recovering, group {GroupId} will resume in {Delay} seconds.", session.Id, context.GroupId.ToString(), TimeSpan.FromTicks(wallClockDelayTicks).TotalSeconds);
                     }
                     else
                     {
                         // Client, that was buffering, resumed playback but did not update others in time.
-                        delayTicks = context.GetHighestPing() * 2 * TimeSpan.TicksPerMillisecond;
-                        delayTicks = Math.Max(delayTicks, TimeSpan.FromMilliseconds(context.DefaultPing).Ticks);
+                        wallClockDelayTicks = context.GetHighestPing() * 2 * TimeSpan.TicksPerMillisecond;
+                        wallClockDelayTicks = Math.Max(wallClockDelayTicks, TimeSpan.FromMilliseconds(context.DefaultPing).Ticks);
 
-                        context.LastActivity = currentTime.AddTicks(delayTicks);
+                        context.LastActivity = currentTime.AddTicks(wallClockDelayTicks);
 
                         var command = context.NewSyncPlayCommand(SendCommandType.Unpause);
                         context.SendCommand(session, SyncPlayBroadcastType.AllGroup, command, cancellationToken);
 
-                        _logger.LogWarning("Session {SessionId} resumed playback, group {GroupId} has {Delay} seconds to recover.", session.Id, context.GroupId.ToString(), TimeSpan.FromTicks(delayTicks).TotalSeconds);
+                        _logger.LogWarning("Session {SessionId} resumed playback, group {GroupId} has {Delay} seconds to recover.", session.Id, context.GroupId.ToString(), TimeSpan.FromTicks(wallClockDelayTicks).TotalSeconds);
                     }
 
                     // Change state.

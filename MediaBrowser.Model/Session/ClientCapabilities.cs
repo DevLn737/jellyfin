@@ -23,6 +23,8 @@ namespace MediaBrowser.Model.Session
 
         public bool SupportsMediaControl { get; set; }
 
+        public bool SupportsSyncPlayPlaybackRate { get; set; }
+
         public bool SupportsPersistentIdentifier { get; set; }
 
         public DeviceProfile DeviceProfile { get; set; }

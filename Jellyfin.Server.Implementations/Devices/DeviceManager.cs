@@ -303,6 +303,7 @@ namespace Jellyfin.Server.Implementations.Devices
                 PlayableMediaTypes = capabilities.PlayableMediaTypes,
                 SupportedCommands = capabilities.SupportedCommands,
                 SupportsMediaControl = capabilities.SupportsMediaControl,
+                SupportsSyncPlayPlaybackRate = capabilities.SupportsSyncPlayPlaybackRate,
                 SupportsPersistentIdentifier = capabilities.SupportsPersistentIdentifier,
                 DeviceProfile = capabilities.DeviceProfile,
                 AppStoreUrl = capabilities.AppStoreUrl,

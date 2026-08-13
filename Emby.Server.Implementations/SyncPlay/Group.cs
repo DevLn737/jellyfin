@@ -25,7 +25,7 @@ namespace Emby.Server.Implementations.SyncPlay
     /// <remarks>
     /// Class is not thread-safe, external locking is required when accessing methods.
     /// </remarks>
-    public class Group : IGroupStateContext
+    public class Group : IGroupStateContext, IPlaybackRateGroupStateContext
     {
         /// <summary>
         /// The default value of <see cref="GroupWaitTimeout"/>, in milliseconds.
@@ -166,6 +166,9 @@ namespace Emby.Server.Implementations.SyncPlay
         /// </summary>
         /// <value>The position ticks.</value>
         public long PositionTicks { get; set; }
+
+        /// <inheritdoc />
+        public float BasePlaybackRate { get; set; } = 1.0F;
 
         /// <summary>
         /// Gets or sets the last activity.
@@ -329,6 +332,7 @@ namespace Emby.Server.Implementations.SyncPlay
         /// <param name="cancellationToken">The cancellation token.</param>
         public void SessionJoin(SessionInfo session, JoinGroupRequest request, CancellationToken cancellationToken)
         {
+            EnsureSessionCanJoin(session);
             AddSession(session);
 
             var updateSession = new SyncPlayGroupJoinedUpdate(GroupId, GetInfo());
@@ -385,7 +389,38 @@ namespace Emby.Server.Implementations.SyncPlay
             //      Once all clients report to be ready the group's state can change to Playing or Paused.
             // - Playing: clients have some media loaded and playback is unpaused.
             // - Paused: clients have some media loaded but playback is currently paused.
+            if (request is SetPlaybackRateGroupRequest playbackRateRequest)
+            {
+                EnsureGroupSupportsPlaybackRate(playbackRateRequest.PlaybackRate);
+                var previousRate = BasePlaybackRate;
+                request.Apply(this, _state, session, cancellationToken);
+                _logger.LogInformation(
+                    "Group {GroupId} changed base playback rate from {PreviousRate} to {PlaybackRate} in state {StateType} for {ParticipantCount} participants.",
+                    GroupId,
+                    previousRate,
+                    BasePlaybackRate,
+                    _state.Type,
+                    _participants.Count);
+                return;
+            }
+
             request.Apply(this, _state, session, cancellationToken);
+        }
+
+        /// <summary>
+        /// Ensures that a session can join the group at its current playback rate.
+        /// </summary>
+        /// <param name="session">The session attempting to join.</param>
+        public void EnsureSessionCanJoin(SessionInfo session)
+        {
+            if (!BasePlaybackRate.Equals(1.0F) && !SessionSupportsPlaybackRate(session))
+            {
+                _logger.LogWarning(
+                    "Rejected a session from joining group {GroupId} at playback rate {PlaybackRate} because it did not advertise synchronized playback-rate support.",
+                    GroupId,
+                    BasePlaybackRate);
+                throw new SyncPlayPlaybackRateNotSupportedException(1);
+            }
         }
 
         /// <summary>
@@ -469,7 +504,14 @@ namespace Emby.Server.Implementations.SyncPlay
                 LastActivity,
                 type,
                 PositionTicks,
+                BasePlaybackRate,
                 DateTime.UtcNow);
+        }
+
+        /// <inheritdoc />
+        public float SanitizePlaybackRate(float playbackRate)
+        {
+            return Math.Clamp(playbackRate, 0.25F, 5.0F);
         }
 
         /// <inheritdoc />
@@ -716,7 +758,7 @@ namespace Emby.Server.Implementations.SyncPlay
                 // In other words, LastActivity is in the future,
                 // when playback unpause is supposed to happen.
                 // Adjust ticks only if playback actually started.
-                startPositionTicks += Math.Max(elapsedTime.Ticks, 0);
+                startPositionTicks += Math.Max((long)Math.Round(elapsedTime.Ticks * BasePlaybackRate), 0);
             }
 
             return new PlayQueueUpdate(
@@ -725,6 +767,7 @@ namespace Emby.Server.Implementations.SyncPlay
                 PlayQueue.GetPlaylist(),
                 PlayQueue.PlayingItemIndex,
                 startPositionTicks,
+                BasePlaybackRate,
                 isPlaying,
                 PlayQueue.ShuffleMode,
                 PlayQueue.RepeatMode);
@@ -807,6 +850,34 @@ namespace Emby.Server.Implementations.SyncPlay
             if (GroupWaitDeadline is null || startNewWaitingPeriod)
             {
                 GroupWaitDeadline = Environment.TickCount64 + GroupWaitTimeout;
+            }
+        }
+
+        private static bool SessionSupportsPlaybackRate(SessionInfo session)
+        {
+            return session.Capabilities?.SupportsSyncPlayPlaybackRate == true;
+        }
+
+        private void EnsureGroupSupportsPlaybackRate(float playbackRate)
+        {
+            if (playbackRate.Equals(1.0F))
+            {
+                return;
+            }
+
+            var sessions = _sessionManager.Sessions.ToDictionary(session => session.Id, StringComparer.OrdinalIgnoreCase);
+            var unsupportedParticipants = _participants.Values.Count(participant =>
+                !sessions.TryGetValue(participant.SessionId, out var session)
+                || !SessionSupportsPlaybackRate(session));
+
+            if (unsupportedParticipants > 0)
+            {
+                _logger.LogWarning(
+                    "Rejected playback rate {PlaybackRate} for group {GroupId} because {UnsupportedParticipants} participants did not advertise synchronized playback-rate support.",
+                    playbackRate,
+                    GroupId,
+                    unsupportedParticipants);
+                throw new SyncPlayPlaybackRateNotSupportedException(unsupportedParticipants);
             }
         }
     }

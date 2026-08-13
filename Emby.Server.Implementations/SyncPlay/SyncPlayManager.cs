@@ -189,6 +189,8 @@ namespace Emby.Server.Implementations.SyncPlay
                 // Group lock required to let other requests end first.
                 lock (group)
                 {
+                    group.EnsureSessionCanJoin(session);
+
                     if (!group.HasAccessToPlayQueue(user))
                     {
                         _logger.LogWarning("Session {SessionId} tried to join group {GroupId} but does not have access to some content of the playing queue.", session.Id, group.GroupId.ToString());

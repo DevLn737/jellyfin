@@ -77,7 +77,7 @@ namespace MediaBrowser.Controller.SyncPlay.GroupStates
                 // In other words, LastActivity is in the future,
                 // when playback unpause is supposed to happen.
                 // Seek only if playback actually started.
-                context.PositionTicks += Math.Max(elapsedTime.Ticks, 0);
+                context.PositionTicks += Math.Max(context.ToMediaTicks(elapsedTime), 0);
 
                 var command = context.NewSyncPlayCommand(SendCommandType.Pause);
                 context.SendCommand(session, SyncPlayBroadcastType.AllGroup, command, cancellationToken);
@@ -106,6 +106,14 @@ namespace MediaBrowser.Controller.SyncPlay.GroupStates
         public override void HandleRequest(SeekGroupRequest request, IGroupStateContext context, GroupStateType prevState, SessionInfo session, CancellationToken cancellationToken)
         {
             // Change state.
+            var waitingState = new WaitingGroupState(LoggerFactory);
+            context.SetState(waitingState);
+            waitingState.HandleRequest(request, context, Type, session, cancellationToken);
+        }
+
+        /// <inheritdoc />
+        public override void HandleRequest(SetPlaybackRateGroupRequest request, IGroupStateContext context, GroupStateType prevState, SessionInfo session, CancellationToken cancellationToken)
+        {
             var waitingState = new WaitingGroupState(LoggerFactory);
             context.SetState(waitingState);
             waitingState.HandleRequest(request, context, Type, session, cancellationToken);
