@@ -481,8 +481,9 @@ namespace MediaBrowser.Controller.SyncPlay.GroupStates
             if (ResumePlaying)
             {
                 // Handle case where session reported as ready but in reality
-                // it has no clue of the real position nor the playback state.
-                if (!request.IsPlaying && Math.Abs(delayTicks) > maxPlaybackOffsetTicks)
+                // it has no clue of the real position. Do not schedule a distant
+                // group pause when a playing client reports an invalid position.
+                if (Math.Abs(delayTicks) > maxPlaybackOffsetTicks)
                 {
                     // Session not ready at all.
                     context.SetBuffering(session, true);
