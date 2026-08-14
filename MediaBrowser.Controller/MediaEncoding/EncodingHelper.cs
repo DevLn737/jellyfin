@@ -7575,7 +7575,7 @@ namespace MediaBrowser.Controller.MediaEncoding
             }
             else
             {
-                state.AudioStream = GetMediaStream(mediaStreams, null, MediaStreamType.Audio, true);
+                state.AudioStream = GetMediaStream(mediaStreams, state.BaseRequest.AudioStreamIndex, MediaStreamType.Audio, true);
             }
 
             state.MediaSource = mediaSource;
@@ -7988,6 +7988,7 @@ namespace MediaBrowser.Controller.MediaEncoding
             var threads = GetNumberOfThreads(state, encodingOptions, null);
 
             var inputModifier = GetInputModifier(state, encodingOptions, null);
+            var mapArgs = GetMapArgs(state);
 
             return string.Format(
                 CultureInfo.InvariantCulture,
@@ -7995,7 +7996,7 @@ namespace MediaBrowser.Controller.MediaEncoding
                 inputModifier,
                 GetInputArgument(state, encodingOptions, null),
                 threads,
-                " -vn",
+                " " + mapArgs,
                 string.Join(' ', audioTranscodeParams),
                 outputPath,
                 string.Empty,
