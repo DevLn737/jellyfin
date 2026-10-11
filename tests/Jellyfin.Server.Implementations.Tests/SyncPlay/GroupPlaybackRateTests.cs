@@ -4,7 +4,10 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Emby.Server.Implementations.SyncPlay;
+using Jellyfin.Extensions.Json;
+using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.Net.WebSocketMessages.Outbound;
 using MediaBrowser.Controller.Session;
 using MediaBrowser.Controller.SyncPlay;
 using MediaBrowser.Controller.SyncPlay.GroupStates;
@@ -15,6 +18,7 @@ using MediaBrowser.Model.SyncPlay;
 using Microsoft.Extensions.Logging;
 using Moq;
 using Xunit;
+using User = Jellyfin.Database.Implementations.Entities.User;
 
 namespace Jellyfin.Server.Implementations.Tests.SyncPlay;
 
@@ -113,7 +117,7 @@ public class GroupPlaybackRateTests
         group.HandleRequest(session, new SetPlaybackRateGroupRequest(1.25F), CancellationToken.None);
         group.HandleRequest(
             session,
-            new ReadyGroupRequest(DateTime.UtcNow, group.PositionTicks, false, Guid.Empty),
+            new ReadyGroupRequest(DateTime.UtcNow, group.PositionTicks, false, group.PlayQueue.GetPlayingItemPlaylistId()),
             CancellationToken.None);
 
         Assert.Equal(1.25F, group.BasePlaybackRate);
@@ -154,7 +158,7 @@ public class GroupPlaybackRateTests
         _commands.Clear();
         group.HandleRequest(
             session,
-            new ReadyGroupRequest(DateTime.UtcNow, TimeSpan.FromMilliseconds(228).Ticks, true, Guid.Empty),
+            new ReadyGroupRequest(DateTime.UtcNow, TimeSpan.FromMilliseconds(228).Ticks, true, group.PlayQueue.GetPlayingItemPlaylistId()),
             CancellationToken.None);
 
         Assert.Equal(GroupStateType.Waiting, group.GetInfo().State);
@@ -171,6 +175,109 @@ public class GroupPlaybackRateTests
         var legacySession = CreateSession("legacy", supportsPlaybackRate: false);
 
         Assert.Throws<SyncPlayPlaybackRateNotSupportedException>(() => group.EnsureSessionCanJoin(legacySession));
+    }
+
+    [Theory]
+    [InlineData(1.25F)]
+    [InlineData(1.5F)]
+    public void SetPlaybackRate_PlayingReadyHasNotAppliedBarrier_UsesSeekTolerance(float playbackRate)
+    {
+        var (group, session) = CreateGroup(supportsPlaybackRate: true);
+        group.PositionTicks = TimeSpan.FromSeconds(100).Ticks;
+        group.LastActivity = DateTime.UtcNow;
+        group.SetState(new PlayingGroupState(_loggerFactory.Object));
+
+        group.HandleRequest(session, new SetPlaybackRateGroupRequest(playbackRate), CancellationToken.None);
+        _commands.Clear();
+        group.HandleRequest(
+            session,
+            new ReadyGroupRequest(DateTime.UtcNow, group.PositionTicks - TimeSpan.FromSeconds(2).Ticks, true, group.PlayQueue.GetPlayingItemPlaylistId()),
+            CancellationToken.None);
+
+        Assert.Equal(GroupStateType.Waiting, group.GetInfo().State);
+        Assert.True(group.IsBuffering());
+        Assert.Equal(SendCommandType.Seek, Assert.Single(_commands).Command);
+    }
+
+    [Fact]
+    public void AcceleratedBuffering_ReadyCatchUp_UsesWallClockDelay()
+    {
+        var (group, session) = CreateGroup(supportsPlaybackRate: true);
+        var remainingSession = CreateSession("remaining", supportsPlaybackRate: true);
+        _sessions.Add(remainingSession);
+        group.SessionJoin(remainingSession, new JoinGroupRequest(group.GroupId), CancellationToken.None);
+        group.BasePlaybackRate = 1.5F;
+        group.PositionTicks = TimeSpan.FromSeconds(100).Ticks;
+        group.LastActivity = DateTime.UtcNow;
+        group.SetState(new WaitingGroupState(_loggerFactory.Object) { ResumePlaying = true });
+        group.SetAllBuffering(true);
+        group.SetBuffering(remainingSession, false);
+        _commands.Clear();
+
+        var before = DateTime.UtcNow;
+        group.HandleRequest(
+            session,
+            new ReadyGroupRequest(before, TimeSpan.FromSeconds(94).Ticks, true, group.PlayQueue.GetPlayingItemPlaylistId()),
+            CancellationToken.None);
+
+        Assert.Equal(GroupStateType.Playing, group.GetInfo().State);
+        Assert.DoesNotContain(_commands, command => command.Command == SendCommandType.Seek);
+        Assert.InRange((group.LastActivity - before).TotalSeconds, 3.8, 4.2);
+        Assert.Equal(1.5F, Assert.Single(_commands).PlaybackRate);
+    }
+
+    [Theory]
+    [InlineData(GroupStateType.Playing)]
+    [InlineData(GroupStateType.Paused)]
+    public void SetPlaybackRate_ReadyTimeout_PreservesRateAndPlaybackState(GroupStateType originalState)
+    {
+        var (group, session) = CreateGroup(supportsPlaybackRate: true, groupWaitTimeout: 0);
+        group.LastActivity = DateTime.UtcNow;
+        group.SetState(originalState == GroupStateType.Playing
+            ? new PlayingGroupState(_loggerFactory.Object)
+            : new PausedGroupState(_loggerFactory.Object));
+
+        group.HandleRequest(session, new SetPlaybackRateGroupRequest(1.5F), CancellationToken.None);
+        Assert.Equal(GroupStateType.Waiting, group.GetInfo().State);
+        Assert.NotNull(group.GroupWaitDeadline);
+        _commands.Clear();
+        group.HandleGroupWaitTimeout(CancellationToken.None);
+
+        Assert.Equal(originalState, group.GetInfo().State);
+        Assert.Equal(1.5F, group.BasePlaybackRate);
+        Assert.Null(group.GroupWaitDeadline);
+        var command = Assert.Single(_commands);
+        Assert.Equal(originalState == GroupStateType.Playing ? SendCommandType.Unpause : SendCommandType.Pause, command.Command);
+        Assert.Equal(1.5F, command.PlaybackRate);
+    }
+
+    [Fact]
+    public void AcceleratedGroup_JoinWithoutCapability_DoesNotChangeMembership()
+    {
+        var (group, session) = CreateGroup(supportsPlaybackRate: true);
+        group.HandleRequest(session, new SetPlaybackRateGroupRequest(1.5F), CancellationToken.None);
+        var legacySession = CreateSession("legacy", supportsPlaybackRate: false);
+
+        Assert.Throws<SyncPlayPlaybackRateNotSupportedException>(() =>
+            group.SessionJoin(legacySession, new JoinGroupRequest(group.GroupId), CancellationToken.None));
+
+        Assert.Equal(session.UserName, Assert.Single(group.GetInfo().Participants));
+        Assert.Equal(1.5F, group.BasePlaybackRate);
+    }
+
+    [Fact]
+    public void PlaybackRate_WebSocketCommandAndQueue_KeepExistingEnvelope()
+    {
+        var command = new SendCommand(Guid.NewGuid(), Guid.Empty, DateTime.UtcNow, SendCommandType.Seek, 0, 1.5F, DateTime.UtcNow);
+        using var commandJson = JsonDocument.Parse(JsonSerializer.Serialize(new SyncPlayCommandMessage(command), JsonDefaults.Options));
+
+        Assert.Equal("SyncPlayCommand", commandJson.RootElement.GetProperty("MessageType").GetString());
+        Assert.Equal(1.5F, commandJson.RootElement.GetProperty("Data").GetProperty("PlaybackRate").GetSingle());
+
+        var queue = new PlayQueueUpdate(PlayQueueUpdateReason.Queue, DateTime.UtcNow, [], 0, 0, 1.5F, false, GroupShuffleMode.Sorted, GroupRepeatMode.RepeatNone);
+        using var queueJson = JsonDocument.Parse(JsonSerializer.Serialize(new SyncPlayPlayQueueUpdate(command.GroupId, queue), JsonDefaults.Options));
+        Assert.Equal("PlayQueue", queueJson.RootElement.GetProperty("Type").GetString());
+        Assert.Equal(1.5F, queueJson.RootElement.GetProperty("Data").GetProperty("PlaybackRate").GetSingle());
     }
 
     [Fact]
@@ -211,17 +318,30 @@ public class GroupPlaybackRateTests
         Assert.Throws<ArgumentOutOfRangeException>(() => new SetPlaybackRateGroupRequest(playbackRate));
     }
 
-    private (Group Group, SessionInfo Session) CreateGroup(bool supportsPlaybackRate)
+    private (Group Group, SessionInfo Session) CreateGroup(bool supportsPlaybackRate, long? groupWaitTimeout = null)
     {
+        var user = new User("tester", "auth-provider", "pwdreset-provider");
+        var userManager = new Mock<IUserManager>();
+        userManager.Setup(manager => manager.GetUserById(It.IsAny<Guid>())).Returns(user);
+        var item = new Mock<BaseItem>();
+        item.Setup(value => value.IsVisibleStandalone(It.IsAny<User>())).Returns(true);
+        item.Object.RunTimeTicks = TimeSpan.FromHours(2).Ticks;
+        var libraryManager = new Mock<ILibraryManager>();
+        libraryManager.Setup(manager => manager.GetItemById(It.IsAny<Guid>())).Returns(item.Object);
         var session = CreateSession("session", supportsPlaybackRate);
+        session.UserId = user.Id;
         _sessions.Add(session);
 
         var group = new Group(
             _loggerFactory.Object,
-            Mock.Of<IUserManager>(),
+            userManager.Object,
             _sessionManager.Object,
-            Mock.Of<ILibraryManager>());
+            libraryManager.Object)
+        {
+            GroupWaitTimeout = groupWaitTimeout ?? Group.DefaultGroupWaitTimeout
+        };
         group.CreateGroup(session, new NewGroupRequest("test"), CancellationToken.None);
+        Assert.True(group.SetPlayQueue([Guid.NewGuid()], 0, 0));
         return (group, session);
     }
 

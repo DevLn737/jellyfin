@@ -157,6 +157,36 @@ This repository also includes unit tests that are used to validate functionality
 2. Run tests in Visual Studio using the [Test Explorer](https://docs.microsoft.com/en-us/visualstudio/test/run-unit-tests-with-test-explorer)
 3. Run individual tests in Visual Studio Code using the associated [CodeLens annotation](https://github.com/OmniSharp/omnisharp-vscode/wiki/How-to-run-and-debug-unit-tests)
 
+### SyncPlay playback rate fork
+
+The `syncplay-rate/12.2` branch carries the existing synchronized playback-rate
+extension onto Jellyfin Server 12.2. The group owns the base rate, defaults to
+`1.0`, and accepts a different rate only when every participant advertises
+`SupportsSyncPlayPlaybackRate`. `POST /SyncPlay/SetPlaybackRate` accepts finite
+values from `0.25` through `5.0`; invalid values return 400 and incompatible
+participants return 409. Existing commands and queue snapshots carry the
+optional `PlaybackRate` field, with a missing value interpreted as `1.0` by
+clients. No additional persistent configuration or custom database migration
+is introduced.
+
+Rate changes use the upstream Seek/Ready barrier and its strict seek tolerance,
+while retaining the 12.2 buffering catch-up allowance, wait timeout, session
+cleanup, and rejoin behavior. Progressive audio requests also retain the
+selected embedded or external audio stream instead of falling back to another
+track. External sidecar inputs are mapped explicitly without removing the
+upstream WAV/PCM and stereo downmix handling.
+
+Build and validate with the .NET 10 SDK:
+
+```sh
+dotnet restore Jellyfin.sln --disable-parallel
+dotnet build Jellyfin.sln --configuration Release --no-restore --maxcpucount:2
+dotnet test tests/Jellyfin.Server.Implementations.Tests/Jellyfin.Server.Implementations.Tests.csproj --configuration Release --no-build --no-restore
+dotnet test tests/Jellyfin.Controller.Tests/Jellyfin.Controller.Tests.csproj --configuration Release --no-build --no-restore
+dotnet test tests/Jellyfin.Api.Tests/Jellyfin.Api.Tests.csproj --configuration Release --no-build --no-restore
+dotnet test tests/Jellyfin.Server.Integration.Tests/Jellyfin.Server.Integration.Tests.csproj --configuration Release --no-build --no-restore --filter 'FullyQualifiedName~SyncPlayPlaybackRateTests|FullyQualifiedName~SyncPlayLostWebSocketTests|FullyQualifiedName~OpenApiSpecTests'
+```
+
 ### Advanced Configuration
 
 The following sections describe some more advanced scenarios for running the server from source that build upon the standard instructions above.

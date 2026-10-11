@@ -1,12 +1,15 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Database.Implementations.Entities;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Session;
+using MediaBrowser.Controller.SyncPlay;
 using MediaBrowser.Controller.SyncPlay.PlaybackRequests;
 using MediaBrowser.Controller.SyncPlay.Requests;
+using MediaBrowser.Model.Session;
 using MediaBrowser.Model.SyncPlay;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
@@ -61,6 +64,36 @@ public class SyncPlayManagerTests
     }
 
     [Fact]
+    public void AcceleratedGroup_Rejoin_DoesNotDuplicateTheActiveSessionCounter()
+    {
+        var harness = new ManagerHarness();
+        harness.Session.Capabilities.SupportsSyncPlayPlaybackRate = true;
+        var info = harness.Manager.NewGroup(harness.Session, new NewGroupRequest("group"), CancellationToken.None);
+        harness.Manager.HandleRequest(harness.Session, new SetPlaybackRateGroupRequest(1.5F), CancellationToken.None);
+
+        harness.Manager.JoinGroup(harness.Session, new JoinGroupRequest(info.GroupId), CancellationToken.None);
+        harness.Manager.LeaveGroup(harness.Session, new LeaveGroupRequest(), CancellationToken.None);
+
+        Assert.False(harness.Manager.IsUserActive(harness.User.Id));
+    }
+
+    [Fact]
+    public void AcceleratedGroup_RejectsLegacyJoin_BeforeIncrementingTheCounter()
+    {
+        var harness = new ManagerHarness();
+        harness.Session.Capabilities.SupportsSyncPlayPlaybackRate = true;
+        var second = harness.CreateSession("legacy-session");
+        var info = harness.Manager.NewGroup(harness.Session, new NewGroupRequest("group"), CancellationToken.None);
+        harness.Manager.HandleRequest(harness.Session, new SetPlaybackRateGroupRequest(1.5F), CancellationToken.None);
+
+        Assert.Throws<SyncPlayPlaybackRateNotSupportedException>(() =>
+            harness.Manager.JoinGroup(second, new JoinGroupRequest(info.GroupId), CancellationToken.None));
+        harness.Manager.LeaveGroup(harness.Session, new LeaveGroupRequest(), CancellationToken.None);
+
+        Assert.False(harness.Manager.IsUserActive(harness.User.Id));
+    }
+
+    [Fact]
     public async Task HandleRequest_GroupWaitsForAMemberThatNeverReportsReady_RecoversOnItsOwn()
     {
         var harness = new ManagerHarness(groupWaitTimeout: 200);
@@ -85,11 +118,13 @@ public class SyncPlayManagerTests
     private sealed class ManagerHarness
     {
         private readonly Mock<ISessionManager> _sessionManager = new();
+        private readonly List<SessionInfo> _sessions = [];
 
         public ManagerHarness(long? groupWaitTimeout = null)
         {
             var userManager = new Mock<IUserManager>();
             var libraryManager = new Mock<ILibraryManager>();
+            _sessionManager.SetupGet(manager => manager.Sessions).Returns(_sessions);
 
             User = new User("tester", "auth-provider", "pwdreset-provider");
             userManager.Setup(m => m.GetUserById(It.IsAny<Guid>())).Returns(User);
@@ -126,12 +161,15 @@ public class SyncPlayManagerTests
 
         public SessionInfo CreateSession(string id)
         {
-            return new SessionInfo(_sessionManager.Object, NullLogger.Instance)
+            var session = new SessionInfo(_sessionManager.Object, NullLogger.Instance)
             {
                 Id = id,
                 UserId = User.Id,
-                UserName = User.Username
+                UserName = User.Username,
+                Capabilities = new ClientCapabilities()
             };
+            _sessions.Add(session);
+            return session;
         }
 
         public async Task<GroupStateType> WaitForState(SessionInfo session, Guid groupId, GroupStateType expected)
