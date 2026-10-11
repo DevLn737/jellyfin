@@ -7996,7 +7996,7 @@ namespace MediaBrowser.Controller.MediaEncoding
                 inputModifier,
                 GetInputArgument(state, encodingOptions, null),
                 threads,
-                " " + mapArgs,
+                " -vn " + mapArgs,
                 string.Join(' ', audioTranscodeParams),
                 outputPath,
                 string.Empty,

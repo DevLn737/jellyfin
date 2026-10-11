@@ -42,6 +42,47 @@ public class EncodingHelperExternalAudioTests
         Assert.Contains("-i \"episode.mkv\"", commandLine, StringComparison.Ordinal);
         Assert.Contains("-i \"episode.ru.mka\"", commandLine, StringComparison.Ordinal);
         Assert.Contains("-map 1:0", commandLine, StringComparison.Ordinal);
+        Assert.DoesNotContain("-map 0:1", commandLine, StringComparison.Ordinal);
+        Assert.Contains("-vn", commandLine, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData(1)]
+    public void AttachMediaSourceInfo_InternalOrDefaultAudio_DoesNotSelectSidecar(int? audioStreamIndex)
+    {
+        var (helper, mediaEncoder) = CreateEncodingHelperWithMediaEncoder();
+        var (state, mediaSource, _) = CreateExternalAudioState();
+        state.BaseRequest.AudioStreamIndex = audioStreamIndex;
+        mediaEncoder.Setup(encoder => encoder.GetInputPathArgument(state)).Returns("\"episode.mkv\"");
+
+        helper.AttachMediaSourceInfo(state, new EncodingOptions(), mediaSource, "stream.ac3");
+        var commandLine = helper.GetProgressiveAudioFullCommandLine(state, new EncodingOptions(), "output.ac3");
+
+        Assert.Equal(1, state.AudioStream.Index);
+        Assert.False(state.AudioStream.IsExternal);
+        Assert.Contains("-map 0:1", commandLine, StringComparison.Ordinal);
+        Assert.DoesNotContain("episode.ru.mka", commandLine, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void GetProgressiveAudioFullCommandLine_UnknownMediaInfo_AlwaysExcludesVideo(bool unknownAudioIndex)
+    {
+        var (helper, mediaEncoder) = CreateEncodingHelperWithMediaEncoder();
+        var (state, mediaSource, _) = CreateExternalAudioState();
+        state.MediaSource = mediaSource;
+        state.IsInputVideo = unknownAudioIndex;
+        state.AudioStream = unknownAudioIndex
+            ? new MediaStream { Type = MediaStreamType.Audio, Index = -1, Codec = "aac", Channels = 2 }
+            : null;
+        mediaSource.MediaStreams = state.AudioStream is null ? [] : [state.AudioStream];
+        mediaEncoder.Setup(encoder => encoder.GetInputPathArgument(state)).Returns("\"episode.mkv\"");
+
+        var commandLine = helper.GetProgressiveAudioFullCommandLine(state, new EncodingOptions(), "output.ac3");
+
+        Assert.Contains("-vn", commandLine, StringComparison.Ordinal);
     }
 
     private static EncodingHelper CreateEncodingHelper()
